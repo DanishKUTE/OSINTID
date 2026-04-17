@@ -318,104 +318,105 @@ class IoTDeviceManager:
             }
             if self.storage:
                 self.storage.log("INFO", "IoT", f"Device registered: {name}")
-    
-   def scan_network(self, network_range: str = "192.168.1.0/24") -> List[str]:
-    """Enhanced IoT discovery with multi-port fingerprinting and banner classification"""
-    discovered = []
 
-    COMMON_IOT_PORTS = [80, 443, 554, 8080, 23, 1883]
+    def scan_network(self, network_range: str = "192.168.1.0/24") -> List[str]:
+        """Enhanced IoT discovery with multi-port fingerprinting and banner classification"""
+        discovered = []
 
-    def grab_banner(ip, port):
+        COMMON_IOT_PORTS = [80, 443, 554, 8080, 23, 1883]
+
+        def grab_banner(ip, port):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(1)
+                sock.connect((ip, port))
+
+                # Send minimal probe for HTTP-like services
+                if port in [80, 8080, 443]:
+                    sock.send(b"HEAD / HTTP/1.0\r\n\r\n")
+
+                banner = sock.recv(512).decode(errors='ignore').lower()
+                sock.close()
+                return banner
+            except Exception:
+                return ""
+
+        def classify_device(banner, open_ports):
+            """Basic fingerprinting heuristics"""
+            if "rtsp" in banner or 554 in open_ports:
+                return "IP Camera"
+            elif "mqtt" in banner or 1883 in open_ports:
+                return "IoT Sensor (MQTT)"
+            elif "telnet" in banner or 23 in open_ports:
+                return "Embedded Device (Telnet)"
+            elif "webcam" in banner or "camera" in banner:
+                return "Camera"
+            elif any(p in open_ports for p in [80, 443, 8080]):
+                return "Web-enabled Device"
+            else:
+                return "Unknown"
+
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(1)
-            sock.connect((ip, port))
+            import ipaddress
+            network = ipaddress.IPv4Network(network_range, strict=False)
 
-            # Send minimal probe for HTTP-like services
-            if port in [80, 8080, 443]:
-                sock.send(b"HEAD / HTTP/1.0\r\n\r\n")
+            for ip in list(network.hosts())[:100]:
+                ip_str = str(ip)
+                open_ports = []
+                banners = []
 
-            banner = sock.recv(512).decode(errors='ignore').lower()
-            sock.close()
-            return banner
+                for port in COMMON_IOT_PORTS:
+                    if CPythonNativeLibs.fast_port_scanner(ip_str, port, timeout=0.5):
+                        open_ports.append(port)
+                        banner = grab_banner(ip_str, port)
+                        if banner:
+                            banners.append(banner[:100])
+
+                if open_ports:
+                    device_type = classify_device(" ".join(banners), open_ports)
+                    discovered.append(ip_str)
+
+                    # Register device immediately
+                    self.add_device(
+                        f"dev-{ip_str.replace('.', '-')}",
+                        f"{device_type}-{ip_str}",
+                        device_type,
+                        ip_str
+                    )
+
+                    print(f"{Fore.GREEN}[+] {ip_str} -> {device_type} | Ports: {open_ports}{Style.RESET_ALL}")
+
+        except Exception as e:
+            if self.storage:
+                self.storage.log("ERROR", "IoTScan", f"Scan failed: {e}")
+
+        # Optional Nmap integration
+        try:
+            import shutil
+            if shutil.which("nmap"):
+                print(f"{Fore.CYAN}[*] Running optional Nmap fingerprinting...{Style.RESET_ALL}")
+                for ip in discovered:
+                    try:
+                        result = subprocess.check_output(
+                            ["nmap", "-sV", "-T4", "-F", ip],
+                            stderr=subprocess.DEVNULL,
+                            timeout=15
+                        ).decode(errors='ignore')
+
+                        print(f"{Fore.MAGENTA}[NMAP] {ip}:\n{result.splitlines()[0:10]}{Style.RESET_ALL}")
+
+                    except Exception:
+                        continue
         except Exception:
-            return ""
+            pass
 
-    def classify_device(banner, open_ports):
-        """Basic fingerprinting heuristics"""
-        if "rtsp" in banner or 554 in open_ports:
-            return "IP Camera"
-        elif "mqtt" in banner or 1883 in open_ports:
-            return "IoT Sensor (MQTT)"
-        elif "telnet" in banner or 23 in open_ports:
-            return "Embedded Device (Telnet)"
-        elif "webcam" in banner or "camera" in banner:
-            return "Camera"
-        elif any(p in open_ports for p in [80, 443, 8080]):
-            return "Web-enabled Device"
-        else:
-            return "Unknown"
+        return discovered
 
-    try:
-        import ipaddress
-        network = ipaddress.IPv4Network(network_range, strict=False)
-
-        for ip in list(network.hosts())[:100]:
-            ip_str = str(ip)
-            open_ports = []
-            banners = []
-
-            for port in COMMON_IOT_PORTS:
-                if CPythonNativeLibs.fast_port_scanner(ip_str, port, timeout=0.5):
-                    open_ports.append(port)
-                    banner = grab_banner(ip_str, port)
-                    if banner:
-                        banners.append(banner[:100])
-
-            if open_ports:
-                device_type = classify_device(" ".join(banners), open_ports)
-                discovered.append(ip_str)
-
-                # Register device immediately
-                self.add_device(
-                    f"dev-{ip_str.replace('.', '-')}",
-                    f"{device_type}-{ip_str}",
-                    device_type,
-                    ip_str
-                )
-
-                print(f"{Fore.GREEN}[+] {ip_str} -> {device_type} | Ports: {open_ports}{Style.RESET_ALL}")
-
-    except Exception as e:
-        if self.storage:
-            self.storage.log("ERROR", "IoTScan", f"Scan failed: {e}")
-
-    # Optional Nmap integration
-    try:
-        import shutil
-        if shutil.which("nmap"):
-            print(f"{Fore.CYAN}[*] Running optional Nmap fingerprinting...{Style.RESET_ALL}")
-            for ip in discovered:
-                try:
-                    result = subprocess.check_output(
-                        ["nmap", "-sV", "-T4", "-F", ip],
-                        stderr=subprocess.DEVNULL,
-                        timeout=15
-                    ).decode(errors='ignore')
-
-                    print(f"{Fore.MAGENTA}[NMAP] {ip}:\n{result.splitlines()[0:10]}{Style.RESET_ALL}")
-
-                except Exception:
-                    continue
-    except Exception:
-        pass
-
-    return discovered
-       
-def get_devices(self) -> List[Dict]:
+    def get_devices(self) -> List[Dict]:
         """Get all registered devices"""
         with self.lock:
             return list(self.devices.values())
+
 
 # ============================================================================
 # SECTION 5: NETWORK RECONNAISSANCE ENGINE
