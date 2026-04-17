@@ -511,18 +511,37 @@ class OSINTGatherer:
     
     def search_ip(self, ip: str) -> Dict:
         """Get IP geolocation and information"""
+        # Check for private/reserved IP addresses
+        private_prefixes = ('10.', '172.16.', '172.17.', '172.18.', '172.19.',
+                           '172.20.', '172.21.', '172.22.', '172.23.', '172.24.',
+                           '172.25.', '172.26.', '172.27.', '172.28.', '172.29.',
+                           '172.30.', '172.31.', '192.168.', '127.')
+        if ip.startswith(private_prefixes) or ip.startswith('192.168.') or ip.startswith('10.'):
+            print(f"{Fore.YELLOW}[!] Private IP address - geolocation not available{Style.RESET_ALL}")
+            return {'error': 'private_ip', 'ip': ip, 'message': 'Private IP addresses cannot be geolocated'}
+        
         try:
             import requests
             response = requests.get(f"https://ipapi.co/{ip}/json/", timeout=10)
             if response.status_code == 200:
                 data = response.json()
+                # Check for API errors
+                if 'error' in data:
+                    print(f"{Fore.YELLOW}[!] API error: {data.get('reason', 'Unknown')}{Style.RESET_ALL}")
+                    return data
                 if self.storage:
                     self.storage.log("INFO", "IPOsint", f"IP info: {ip}")
                 return data
-            return {}
+            elif response.status_code == 404:
+                print(f"{Fore.YELLOW}[!] IP not found in database{Style.RESET_ALL}")
+                return {'error': 'not_found', 'ip': ip}
+            else:
+                print(f"{Fore.YELLOW}[!] API returned status {response.status_code}{Style.RESET_ALL}")
+                return {}
         except Exception as e:
             if self.storage:
                 self.storage.log("ERROR", "IPOsint", str(e))
+            print(f"{Fore.RED}[!] Request failed: {e}{Style.RESET_ALL}")
             return {}
     
     def domain_reputation(self, domain: str) -> Dict:
